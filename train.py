@@ -428,7 +428,7 @@ def get_args():
     parser.add_argument('--load_size', default=256) # 256
     parser.add_argument('--input_size', default=224)
     parser.add_argument('--coreset_sampling_ratio', default=0.001)
-    parser.add_argument('--project_root_path', default=r'./test') # 'D:\Project_Train_Results\mvtec_anomaly_detection\210624\test') #
+    parser.add_argument('--project_root_path', default=r'../anomaly_result') # 'D:\Project_Train_Results\mvtec_anomaly_detection\210624\test') #
     parser.add_argument('--save_src_code', default=True)
     parser.add_argument('--save_anomaly_map', default=True)
     parser.add_argument('--n_neighbors', type=int, default=9)
