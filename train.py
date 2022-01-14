@@ -28,6 +28,7 @@ from sklearn.random_projection import SparseRandomProjection
 from sklearn.neighbors import NearestNeighbors
 from scipy.ndimage import gaussian_filter
 
+from torchvision import models
 
 def distance_matrix(x, y=None, p=2):  # pairwise distance of vectors
 
@@ -251,7 +252,11 @@ class STPM(pl.LightningModule):
         def hook_t(module, input, output):
             self.features.append(output)
 
-        self.model = torch.hub.load('pytorch/vision:v0.9.0', 'wide_resnet50_2', pretrained=True)
+        #self.model = torch.hub.load('pytorch/vision:v0.9.0', 'wide_resnet50_2', pretrained=True)
+
+        self.model = models.wide_resnet50_2()
+        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
+        self.model.load_state_dict(torch.load(model_path, map_location=self._device))
 
         for param in self.model.parameters():
             param.requires_grad = False
