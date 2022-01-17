@@ -144,6 +144,72 @@ def reshape_embedding(embedding):
 mean_train = [0.485, 0.456, 0.406]
 std_train = [0.229, 0.224, 0.225]
 
+class ADDFDataset(Dataset):
+    def __init__(self, root, transform, gt_transform, phase):
+        if phase=='train':
+            self.img_dirs = []
+            self.img_dirs.append(os.path.join(root, 'edge_1f'))
+            self.img_dirs.append(os.path.join(root, 'wafer_1f'))
+            self.img_dirs.append(os.path.join(root, 'xedge_1f'))
+        else:
+            self.img_dirs = []
+            self.img_dirs.append(os.path.join(root, 'edge_1f'))
+            self.img_dirs.append(os.path.join(root, 'wafer_1f'))
+            self.img_dirs.append(os.path.join(root, 'xedge_1f'))
+
+            self.img_dirs.append(os.path.join(root, 'edge_1fd2'))
+            self.img_dirs.append(os.path.join(root, 'wafer_1fd2'))
+            self.img_dirs.append(os.path.join(root, 'xedge_1fd2'))
+
+        self.phase = phase
+        self.transform = transform
+        # load dataset
+        self.img_paths, self.labels, self.types = self.load_dataset() # self.labels => good : 0, anomaly : 1
+
+    def load_dataset(self):
+
+        img_tot_paths = []
+        tot_labels = []
+        tot_types = []
+        
+        path_offset = 0 if self.phase == 'train' else 1
+
+        for img_dir in self.img_dirs :
+            image_type = img_dir.split(os.path.sep)[-1]
+            dataset_dirs = os.listdir(img_dir) # 'dataset00', 'dataset01', 'dataset02'
+
+            for dataset_dir in dataset_dirs :
+                img_paths = sorted(glob.glob(os.path.join(img_dir, dataset_dir) + "/*.png"))
+                img_paths = img_paths[path_offset::2]
+                img_tot_paths.extend(img_paths)
+                tot_types.extend([image_type]*len(img_paths))
+
+                if 'd1' in image_type :
+                    tot_labels.extend([1]*len(img_paths))
+                elif 'd2' in image_type :
+                    tot_labels.extend([2]*len(img_paths))
+                elif 'd3' in image_type :
+                    tot_labels.extend([3]*len(img_paths))
+                else :
+                    tot_labels.extend([0]*len(img_paths))
+        
+        #return img_tot_paths, tot_labels, tot_types
+        return img_tot_paths, tot_labels, tot_types
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        img_path, label, img_type = self.img_paths[idx], self.labels[idx], self.types[idx]
+        img = Image.open(img_path).convert('RGB')
+        img = self.transform(img)
+            
+        gt = torch.zeros([1, img.size()[-2], img.size()[-2]])
+        
+        assert img.size()[1:] == gt.size()[1:], "image.size != gt.size !!!"
+
+        return img, gt, label, os.path.basename(img_path[:-4]), img_type
+
 class MVTecDataset(Dataset):
     def __init__(self, root, transform, gt_transform, phase):
         if phase=='train':
@@ -313,13 +379,21 @@ class STPM(pl.LightningModule):
         cv2.imwrite(os.path.join(self.sample_path, f'{x_type}_{file_name}_gt.jpg'), gt_img)
 
     def train_dataloader(self):
-        image_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
+        if args.ADDFdataset :
+            image_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
+        else : 
+            image_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
         train_loader = DataLoader(image_datasets, batch_size=args.batch_size, shuffle=True, num_workers=0) #, pin_memory=True)
+        print("length of train datasets :", len(image_datasets))
         return train_loader
 
     def test_dataloader(self):
-        test_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='test')
+        if args.ADDFdataset :
+            test_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='test')
+        else : 
+            test_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='test')
         test_loader = DataLoader(test_datasets, batch_size=1, shuffle=False, num_workers=0) #, pin_memory=True) # only work on batch_size=1, now.
+        print("length of test datasets :", len(test_datasets))
         return test_loader
 
     def configure_optimizers(self):
@@ -376,6 +450,32 @@ class STPM(pl.LightningModule):
             embeddings.append(m(feature))
         embedding_ = embedding_concat(embeddings[0], embeddings[1])
         embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+        
+        #revised : 2021/01/17(Jaehyeok Bae)
+        score_patches, feature_indices = self.index.search(embedding_test, k=1)
+        anomaly_map = score_patches[:,0].reshape((28,28))
+
+        anomaly_index = np.argmax(score_patches[:,0])
+        max_dist_score = score_patches[anomaly_index] # maximum distance score
+        anomaly_patch = embedding_test[anomaly_index]
+        nearest_patch_feature = self.index.reconstruct(feature_indices[anomaly_index].item()) # nearest patch-feature to anomaly index test feature
+        _, b_nearest_patch_feature_indices = self.index.search(nearest_patch_feature.reshape(1, -1) , k=args.n_neighbors)
+
+        neighbor_index = faiss.IndexFlatL2(self.embedding_coreset.shape[1])
+        
+        for i in range(b_nearest_patch_feature_indices.shape[1]) :
+            neighbor_index.add(self.index.reconstruct(b_nearest_patch_feature_indices[0, i].item()).reshape(1, -1))
+
+        neighbor_distances, _ = neighbor_index.search(anomaly_patch.reshape(1, -1), k=args.n_neighbors)
+
+        w = (1 - np.exp(max_dist_score) / np.sum(np.exp(neighbor_distances)))
+        score = w * max_dist_score # Image-level score
+
+        gt_np = gt.cpu().numpy()[0,0].astype(int)
+        anomaly_map_resized = cv2.resize(anomaly_map, (args.input_size, args.input_size))
+        anomaly_map_resized_blur = gaussian_filter(anomaly_map_resized, sigma=4)
+
+        '''
         score_patches, _ = self.index.search(embedding_test , k=args.n_neighbors)
         anomaly_map = score_patches[:,0].reshape((28,28))
         N_b = score_patches[np.argmax(score_patches[:,0])]
@@ -384,6 +484,7 @@ class STPM(pl.LightningModule):
         gt_np = gt.cpu().numpy()[0,0].astype(int)
         anomaly_map_resized = cv2.resize(anomaly_map, (args.input_size, args.input_size))
         anomaly_map_resized_blur = gaussian_filter(anomaly_map_resized, sigma=4)
+        '''
         self.gt_list_px_lvl.extend(gt_np.ravel())
         self.pred_list_px_lvl.extend(anomaly_map_resized_blur.ravel())
         self.gt_list_img_lvl.append(label.cpu().numpy()[0])
@@ -395,9 +496,12 @@ class STPM(pl.LightningModule):
         self.save_anomaly_map(anomaly_map_resized_blur, input_x, gt_np*255, file_name[0], x_type[0])
 
     def test_epoch_end(self, outputs):
-        print("Total pixel-level auc-roc score :")
-        pixel_auc = roc_auc_score(self.gt_list_px_lvl, self.pred_list_px_lvl)
-        print(pixel_auc)
+        if args.ADDFdataset :
+            pixel_auc = 0
+        else :
+            print("Total pixel-level auc-roc score :")
+            pixel_auc = roc_auc_score(self.gt_list_px_lvl, self.pred_list_px_lvl)
+            print(pixel_auc)
         print("Total image-level auc-roc score :")
         img_auc = roc_auc_score(self.gt_list_img_lvl, self.pred_list_img_lvl)
         print(img_auc)
@@ -421,8 +525,9 @@ class STPM(pl.LightningModule):
 def get_args():
     parser = argparse.ArgumentParser(description='ANOMALYDETECTION')
     parser.add_argument('--phase', choices=['train','test'], default='train')
-    parser.add_argument('--dataset_path', default=r'./MVTec') # 'D:\Dataset\mvtec_anomaly_detection')#
-    parser.add_argument('--category', default='hazelnut')
+    parser.add_argument('--dataset_path', default=r'../mvtec_dataset') # 'D:\Dataset\mvtec_anomaly_detection')#
+    parser.add_argument('--ADDFdataset', default=False, action='store_true', help='Whether to use Anomaly Detection Defocused Dataset')
+    parser.add_argument('--category', default='hazelnut') # iso/08F
     parser.add_argument('--num_epochs', default=1)
     parser.add_argument('--batch_size', default=32)
     parser.add_argument('--load_size', default=256) # 256
