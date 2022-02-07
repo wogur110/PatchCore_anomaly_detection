@@ -129,4 +129,6 @@ dmypy.json
 .pyre/
 
 # embedding.pickle
-./embeddings/
+./embeddings
+*.sh
+*.faiss

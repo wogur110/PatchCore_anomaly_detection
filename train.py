@@ -30,6 +30,9 @@ from scipy.ndimage import gaussian_filter
 
 from torchvision import models
 
+from utils.common.utils import ifftc_torch, fftc_torch
+from utils.common.visualize import visualize_TSNE
+
 def distance_matrix(x, y=None, p=2):  # pairwise distance of vectors
 
     y = x if type(y) == type(None) else y
@@ -106,7 +109,10 @@ def copy_files(src, dst, ignores=[]):
 def prep_dirs(root):
     # make embeddings dir
     # embeddings_path = os.path.join(root, 'embeddings')
-    embeddings_path = os.path.join('./', 'embeddings', args.category)
+    if args.ADDFdataset :
+        embeddings_path = os.path.join('./', 'embeddings', args.category, str(args.anomaly_class), args.img_type)
+    else :
+        embeddings_path = os.path.join('./', 'embeddings', args.category)
     os.makedirs(embeddings_path, exist_ok=True)
     # make sample dir
     sample_path = os.path.join(root, 'sample')
@@ -148,18 +154,42 @@ class ADDFDataset(Dataset):
     def __init__(self, root, transform, gt_transform, phase):
         if phase=='train':
             self.img_dirs = []
-            self.img_dirs.append(os.path.join(root, 'edge_1f'))
-            self.img_dirs.append(os.path.join(root, 'wafer_1f'))
-            self.img_dirs.append(os.path.join(root, 'xedge_1f'))
+            if args.img_type == 'all' or args.img_type == 'edge' :
+                self.img_dirs.append(os.path.join(root, 'edge_1f'))
+            if args.img_type == 'all' or args.img_type == 'wafer' :
+                self.img_dirs.append(os.path.join(root, 'wafer_1f'))
+            if args.img_type == 'all' or args.img_type == 'xedge' :
+                self.img_dirs.append(os.path.join(root, 'xedge_1f'))
         else:
             self.img_dirs = []
-            self.img_dirs.append(os.path.join(root, 'edge_1f'))
-            self.img_dirs.append(os.path.join(root, 'wafer_1f'))
-            self.img_dirs.append(os.path.join(root, 'xedge_1f'))
+            if args.img_type == 'all' or args.img_type == 'edge' :
+                self.img_dirs.append(os.path.join(root, 'edge_1f'))
+            if args.img_type == 'all' or args.img_type == 'wafer' :
+                self.img_dirs.append(os.path.join(root, 'wafer_1f'))
+            if args.img_type == 'all' or args.img_type == 'xedge' :
+                self.img_dirs.append(os.path.join(root, 'xedge_1f'))
 
-            self.img_dirs.append(os.path.join(root, 'edge_1fd2'))
-            self.img_dirs.append(os.path.join(root, 'wafer_1fd2'))
-            self.img_dirs.append(os.path.join(root, 'xedge_1fd2'))
+            if args.anomaly_class == 1 :
+                if args.img_type == 'all' or args.img_type == 'edge' :
+                    self.img_dirs.append(os.path.join(root, 'edge_1fd1'))
+                if args.img_type == 'all' or args.img_type == 'wafer' :
+                    self.img_dirs.append(os.path.join(root, 'wafer_1fd1'))
+                if args.img_type == 'all' or args.img_type == 'xedge' :
+                    self.img_dirs.append(os.path.join(root, 'xedge_1fd1'))
+            elif args.anomaly_class == 2 :
+                if args.img_type == 'all' or args.img_type == 'edge' :
+                    self.img_dirs.append(os.path.join(root, 'edge_1fd2'))
+                if args.img_type == 'all' or args.img_type == 'wafer' :
+                    self.img_dirs.append(os.path.join(root, 'wafer_1fd2'))
+                if args.img_type == 'all' or args.img_type == 'xedge' :
+                    self.img_dirs.append(os.path.join(root, 'xedge_1fd2'))
+            elif args.anomaly_class == 3 :
+                if args.img_type == 'all' or args.img_type == 'edge' :
+                    self.img_dirs.append(os.path.join(root, 'edge_1fd3'))
+                if args.img_type == 'all' or args.img_type == 'wafer' :
+                    self.img_dirs.append(os.path.join(root, 'wafer_1fd3'))
+                if args.img_type == 'all' or args.img_type == 'xedge' :
+                    self.img_dirs.append(os.path.join(root, 'xedge_1fd3'))
 
         self.phase = phase
         self.transform = transform
@@ -171,7 +201,7 @@ class ADDFDataset(Dataset):
         img_tot_paths = []
         tot_labels = []
         tot_types = []
-        
+
         path_offset = 0 if self.phase == 'train' else 1
 
         for img_dir in self.img_dirs :
@@ -179,8 +209,12 @@ class ADDFDataset(Dataset):
             dataset_dirs = os.listdir(img_dir) # 'dataset00', 'dataset01', 'dataset02'
 
             for dataset_dir in dataset_dirs :
-                img_paths = sorted(glob.glob(os.path.join(img_dir, dataset_dir) + "/*.png"))
-                img_paths = img_paths[path_offset::2]
+                if 'd1' in image_type or 'd2' in image_type or 'd3' in image_type :
+                    img_paths = sorted(glob.glob(os.path.join(img_dir, dataset_dir) + "/*.png"))
+                else :
+                    img_paths = sorted(glob.glob(os.path.join(img_dir, dataset_dir) + "/*.png"))
+                    img_paths = img_paths[path_offset::2]
+
                 img_tot_paths.extend(img_paths)
                 tot_types.extend([image_type]*len(img_paths))
 
@@ -192,8 +226,7 @@ class ADDFDataset(Dataset):
                     tot_labels.extend([3]*len(img_paths))
                 else :
                     tot_labels.extend([0]*len(img_paths))
-        
-        #return img_tot_paths, tot_labels, tot_types
+
         return img_tot_paths, tot_labels, tot_types
 
     def __len__(self):
@@ -203,12 +236,25 @@ class ADDFDataset(Dataset):
         img_path, label, img_type = self.img_paths[idx], self.labels[idx], self.types[idx]
         img = Image.open(img_path).convert('RGB')
         img = self.transform(img)
-            
+
+        # kspace_feature
+        kspace_img = torch.abs(fftc_torch(img))
+        center_pos = int(kspace_img.shape[1]/2), int(kspace_img.shape[2]/2)
+
+        #max_offset = 180.0
+
+        kspace_img = kspace_img / kspace_img.max()
+        #kspace_img = kspace_img / max_offset
+        #kspace_img[:, center_pos[0], center_pos[1]] = 0 # erase DC value
+        #kspace_img[:, center_pos[0]-1:center_pos[0]+1, center_pos[0]-1:center_pos[0]+1] = 0 # erase DC value
+        normalize = transforms.Normalize(mean=mean_train, std=std_train)
+        kspace_img = normalize(kspace_img)
+
         gt = torch.zeros([1, img.size()[-2], img.size()[-2]])
-        
+
         assert img.size()[1:] == gt.size()[1:], "image.size != gt.size !!!"
 
-        return img, gt, label, os.path.basename(img_path[:-4]), img_type
+        return img, kspace_img, gt, label, os.path.basename(img_path[:-4]), img_type
 
 class MVTecDataset(Dataset):
     def __init__(self, root, transform, gt_transform, phase):
@@ -230,7 +276,7 @@ class MVTecDataset(Dataset):
         tot_types = []
 
         defect_types = os.listdir(self.img_path)
-        
+
         for defect_type in defect_types:
             if defect_type == 'good':
                 img_paths = glob.glob(os.path.join(self.img_path, defect_type) + "/*.png")
@@ -249,7 +295,7 @@ class MVTecDataset(Dataset):
                 tot_types.extend([defect_type]*len(img_paths))
 
         assert len(img_tot_paths) == len(gt_tot_paths), "Something wrong with test and ground truth pair!"
-        
+
         return img_tot_paths, gt_tot_paths, tot_labels, tot_types
 
     def __len__(self):
@@ -264,10 +310,16 @@ class MVTecDataset(Dataset):
         else:
             gt = Image.open(gt)
             gt = self.gt_transform(gt)
-        
+
+        # kspace_feature
+        kspace_img = torch.abs(fftc_torch(img))
+        kspace_img = kspace_img / kspace_img.max()
+        normalize = transforms.Normalize(mean=mean_train, std=std_train)
+        kspace_img = normalize(kspace_img)
+
         assert img.size()[1:] == gt.size()[1:], "image.size != gt.size !!!"
 
-        return img, gt, label, os.path.basename(img_path[:-4]), img_type
+        return img, kspace_img, gt, label, os.path.basename(img_path[:-4]), img_type
 
 
 def cvt2heatmap(gray):
@@ -283,7 +335,7 @@ def heatmap_on_image(heatmap, image):
 
 def min_max_norm(image):
     a_min, a_max = image.min(), image.max()
-    return (image-a_min)/(a_max - a_min)    
+    return (image-a_min)/(a_max - a_min)
 
 
 def cal_confusion_matrix(y_true, y_pred_no_thresh, thresh, img_path_list):
@@ -306,7 +358,7 @@ def cal_confusion_matrix(y_true, y_pred_no_thresh, thresh, img_path_list):
     print(false_p)
     print('false negative')
     print(false_n)
-    
+
 
 class STPM(pl.LightningModule):
     def __init__(self, hparams):
@@ -320,6 +372,14 @@ class STPM(pl.LightningModule):
 
         #self.model = torch.hub.load('pytorch/vision:v0.9.0', 'wide_resnet50_2', pretrained=True)
 
+        # self.model = models.resnet152()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet152-b121ed2d.pth"
+        # self.model = models.resnet101()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet101-5d3b4d8f.pth"
+        # self.model = models.resnet34()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
+        # self.model = models.resnet50()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet50-19c8e357.pth"
         self.model = models.wide_resnet50_2()
         model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
         self.model.load_state_dict(torch.load(model_path, map_location=self._device))
@@ -327,8 +387,19 @@ class STPM(pl.LightningModule):
         for param in self.model.parameters():
             param.requires_grad = False
 
-        self.model.layer2[-1].register_forward_hook(hook_t)
-        self.model.layer3[-1].register_forward_hook(hook_t)
+        if args.block_index == 1 :
+            self.model.layer1[-1].register_forward_hook(hook_t)
+            self.model.layer2[-1].register_forward_hook(hook_t)
+        elif args.block_index == 2 :
+            self.model.layer2[-1].register_forward_hook(hook_t)
+            self.model.layer3[-1].register_forward_hook(hook_t)
+        elif args.block_index == 3 :
+            self.model.layer3[-1].register_forward_hook(hook_t)
+            self.model.layer4[-1].register_forward_hook(hook_t)
+        elif args.block_index == -1 :
+            self.model.avgpool.register_forward_hook(hook_t)
+        elif args.block_index == -2 :
+            self.model.layer4[-1].register_forward_hook(hook_t)
 
         self.criterion = torch.nn.MSELoss(reduction='sum')
 
@@ -345,14 +416,17 @@ class STPM(pl.LightningModule):
                         transforms.ToTensor(),
                         transforms.CenterCrop(args.input_size)])
 
-        self.inv_normalize = transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.255], std=[1/0.229, 1/0.224, 1/0.255])
+        self.inv_normalize = transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225])
 
     def init_results_list(self):
         self.gt_list_px_lvl = []
         self.pred_list_px_lvl = []
         self.gt_list_img_lvl = []
         self.pred_list_img_lvl = []
-        self.img_path_list = []        
+        self.img_path_list = []
+        self.img_type_list = []
+        self.viz_feature_list = []
+        self.viz_class_idx_list = []
 
     def init_features(self):
         self.features = []
@@ -362,7 +436,7 @@ class STPM(pl.LightningModule):
         _ = self.model(x_t)
         return self.features
 
-    def save_anomaly_map(self, anomaly_map, input_img, gt_img, file_name, x_type):
+    def save_anomaly_map(self, anomaly_map, input_img, kspace_img, gt_img, file_name, x_type):
         if anomaly_map.shape != input_img.shape:
             anomaly_map = cv2.resize(anomaly_map, (input_img.shape[0], input_img.shape[1]))
         anomaly_map_norm = min_max_norm(anomaly_map)
@@ -377,11 +451,12 @@ class STPM(pl.LightningModule):
         cv2.imwrite(os.path.join(self.sample_path, f'{x_type}_{file_name}_amap.jpg'), anomaly_map_norm_hm)
         cv2.imwrite(os.path.join(self.sample_path, f'{x_type}_{file_name}_amap_on_img.jpg'), hm_on_img)
         cv2.imwrite(os.path.join(self.sample_path, f'{x_type}_{file_name}_gt.jpg'), gt_img)
+        cv2.imwrite(os.path.join(self.sample_path, f'{x_type}_{file_name}_kspace.jpg'), kspace_img)
 
     def train_dataloader(self):
         if args.ADDFdataset :
             image_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
-        else : 
+        else :
             image_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
         train_loader = DataLoader(image_datasets, batch_size=args.batch_size, shuffle=True, num_workers=0) #, pin_memory=True)
         print("length of train datasets :", len(image_datasets))
@@ -390,7 +465,7 @@ class STPM(pl.LightningModule):
     def test_dataloader(self):
         if args.ADDFdataset :
             test_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='test')
-        else : 
+        else :
             test_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='test')
         test_loader = DataLoader(test_datasets, batch_size=1, shuffle=False, num_workers=0) #, pin_memory=True) # only work on batch_size=1, now.
         print("length of test datasets :", len(test_datasets))
@@ -403,7 +478,7 @@ class STPM(pl.LightningModule):
         self.model.eval() # to stop running_var move (maybe not critical)
         self.embedding_dir_path, self.sample_path, self.source_code_save_path = prep_dirs(self.logger.log_dir)
         self.embedding_list = []
-    
+
     def on_test_start(self):
         self.index = faiss.read_index(os.path.join(self.embedding_dir_path,'index.faiss'))
         if torch.cuda.is_available():
@@ -411,18 +486,25 @@ class STPM(pl.LightningModule):
             self.index = faiss.index_cpu_to_gpu(res, 0 ,self.index)
         self.init_results_list()
         self.embedding_dir_path, self.sample_path, self.source_code_save_path = prep_dirs(self.logger.log_dir)
-        
-    def training_step(self, batch, batch_idx): # save locally aware patch features
-        x, _, _, file_name, _ = batch
-        features = self(x)
-        embeddings = []
-        for feature in features:
-            m = torch.nn.AvgPool2d(3, 1, 1)
-            embeddings.append(m(feature))
-        embedding = embedding_concat(embeddings[0], embeddings[1])
-        self.embedding_list.extend(reshape_embedding(np.array(embedding)))
 
-    def training_epoch_end(self, outputs): 
+    def training_step(self, batch, batch_idx): # save locally aware patch features
+        x, kspace_x, _, _, file_name, _ = batch
+        if args.use_kspace :
+            features = self(kspace_x)
+        else :
+            features = self(x)
+
+        if args.block_index == -1 or args.block_index == -2 :
+            self.embedding_list.extend(reshape_embedding(np.array(features[0].cpu())))
+        else :
+            embeddings = []
+            for feature in features:
+                m = torch.nn.AvgPool2d(3, 1, 1)
+                embeddings.append(m(feature))
+            embedding = embedding_concat(embeddings[0], embeddings[1])
+            self.embedding_list.extend(reshape_embedding(np.array(embedding)))
+
+    def training_epoch_end(self, outputs):
         total_embeddings = np.array(self.embedding_list)
         # Random projection
         self.randomprojector = SparseRandomProjection(n_components='auto', eps=0.9) # 'auto' => Johnson-Lindenstrauss lemma
@@ -431,45 +513,79 @@ class STPM(pl.LightningModule):
         selector = kCenterGreedy(total_embeddings,0,0)
         selected_idx = selector.select_batch(model=self.randomprojector, already_selected=[], N=int(total_embeddings.shape[0]*args.coreset_sampling_ratio))
         self.embedding_coreset = total_embeddings[selected_idx]
-        
+
         print('initial embedding size : ', total_embeddings.shape)
         print('final embedding size : ', self.embedding_coreset.shape)
         #faiss
         self.index = faiss.IndexFlatL2(self.embedding_coreset.shape[1])
-        self.index.add(self.embedding_coreset) 
+        self.index.add(self.embedding_coreset)
         faiss.write_index(self.index,  os.path.join(self.embedding_dir_path,'index.faiss'))
 
 
     def test_step(self, batch, batch_idx): # Nearest Neighbour Search
-        x, gt, label, file_name, x_type = batch
+        x, kspace_x, gt, label, file_name, x_type = batch
         # extract embedding
-        features = self(x)
-        embeddings = []
-        for feature in features:
-            m = torch.nn.AvgPool2d(3, 1, 1)
-            embeddings.append(m(feature))
-        embedding_ = embedding_concat(embeddings[0], embeddings[1])
-        embedding_test = np.array(reshape_embedding(np.array(embedding_)))
-        
+        if args.use_kspace :
+            features = self(kspace_x)
+        else :
+            features = self(x)
+
+        if args.block_index == -1 or args.block_index == -2 :
+            embedding_ = features[0].cpu()
+            embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+        else :
+            embeddings = []
+            for feature in features:
+                m = torch.nn.AvgPool2d(3, 1, 1)
+                embeddings.append(m(feature))
+            embedding_ = embedding_concat(embeddings[0], embeddings[1])
+            embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+
+        if args.ADDFdataset and args.visualize:
+            self.viz_feature_list += (reshape_embedding(np.array(embedding_)))
+            if label.cpu().numpy()[0] == 0 :
+                viz_class_idx = 0
+            else :
+                if 'wafer' in x_type[0] :
+                    viz_class_idx = 1
+                elif 'edge' in x_type[0] and not 'xedge' in x_type[0]:
+                    viz_class_idx = 2
+                elif 'xedge' in x_type[0] :
+                    viz_class_idx = 3
+            self.viz_class_idx_list += ([viz_class_idx]*embedding_test.shape[0])
+
         #revised : 2021/01/17(Jaehyeok Bae)
         score_patches, feature_indices = self.index.search(embedding_test, k=1)
-        anomaly_map = score_patches[:,0].reshape((28,28))
+
+        if args.block_index == 1:
+            anomaly_map = score_patches[:,0].reshape((56,56))
+        elif args.block_index == 2:
+            anomaly_map = score_patches[:,0].reshape((28,28))
+        elif args.block_index == 3:
+            anomaly_map = score_patches[:,0].reshape((14,14))
+        elif args.block_index == -1 :
+            anomaly_map = score_patches[:,0].reshape((1,1))
+        elif args.block_index == -2 :
+            anomaly_map = score_patches[:,0].reshape((7,7))
 
         anomaly_index = np.argmax(score_patches[:,0])
         max_dist_score = score_patches[anomaly_index] # maximum distance score
+        mean_dist_score = np.mean(score_patches)
         anomaly_patch = embedding_test[anomaly_index]
         nearest_patch_feature = self.index.reconstruct(feature_indices[anomaly_index].item()) # nearest patch-feature to anomaly index test feature
         _, b_nearest_patch_feature_indices = self.index.search(nearest_patch_feature.reshape(1, -1) , k=args.n_neighbors)
 
         neighbor_index = faiss.IndexFlatL2(self.embedding_coreset.shape[1])
-        
+
         for i in range(b_nearest_patch_feature_indices.shape[1]) :
             neighbor_index.add(self.index.reconstruct(b_nearest_patch_feature_indices[0, i].item()).reshape(1, -1))
 
         neighbor_distances, _ = neighbor_index.search(anomaly_patch.reshape(1, -1), k=args.n_neighbors)
 
-        w = (1 - np.exp(max_dist_score) / np.sum(np.exp(neighbor_distances)))
-        score = w * max_dist_score # Image-level score
+        w = (1 - 1 / np.sum(np.exp(neighbor_distances - max_dist_score)))
+        #score = w * max_dist_score # Image-level score
+        score = mean_dist_score
+        #score = w * mean_dist_score
 
         gt_np = gt.cpu().numpy()[0,0].astype(int)
         anomaly_map_resized = cv2.resize(anomaly_map, (args.input_size, args.input_size))
@@ -490,10 +606,14 @@ class STPM(pl.LightningModule):
         self.gt_list_img_lvl.append(label.cpu().numpy()[0])
         self.pred_list_img_lvl.append(score)
         self.img_path_list.extend(file_name)
+        self.img_type_list.append(x_type[0])
         # save images
-        x = self.inv_normalize(x)
+        x = self.inv_normalize(x).clip(0, 1)
         input_x = cv2.cvtColor(x.permute(0,2,3,1).cpu().numpy()[0]*255, cv2.COLOR_BGR2RGB)
-        self.save_anomaly_map(anomaly_map_resized_blur, input_x, gt_np*255, file_name[0], x_type[0])
+
+        kspace_x = self.inv_normalize(kspace_x).clip(0, 1)
+        kspace_x = cv2.cvtColor(kspace_x.permute(0,2,3,1).cpu().numpy()[0]*255, cv2.COLOR_BGR2RGB)
+        self.save_anomaly_map(anomaly_map_resized_blur, input_x, kspace_x, gt_np*255, file_name[0], x_type[0])
 
     def test_epoch_end(self, outputs):
         if args.ADDFdataset :
@@ -503,10 +623,22 @@ class STPM(pl.LightningModule):
             pixel_auc = roc_auc_score(self.gt_list_px_lvl, self.pred_list_px_lvl)
             print(pixel_auc)
         print("Total image-level auc-roc score :")
+
         img_auc = roc_auc_score(self.gt_list_img_lvl, self.pred_list_img_lvl)
         print(img_auc)
         print('test_epoch_end')
         values = {'pixel_auc': pixel_auc, 'img_auc': img_auc}
+
+        if args.ADDFdataset :
+            f = open("../all_train_result.txt", 'a')
+            data = [args.category, str(args.anomaly_class), args.img_type, str(args.coreset_sampling_ratio), str(args.use_kspace), str(args.block_index), str(self.embedding_coreset.shape[0]), "{0:.4f}".format(img_auc)]
+            data = ','.join(data) + '\n'
+            f.write(data)
+            f.close()
+
+            if args.visualize :
+                visualize_TSNE(self.viz_feature_list, self.viz_class_idx_list, "../visualize_TSNE.png")
+
         self.log_dict(values)
         # anomaly_list = []
         # normal_list = []
@@ -528,22 +660,31 @@ def get_args():
     parser.add_argument('--dataset_path', default=r'../mvtec_dataset') # 'D:\Dataset\mvtec_anomaly_detection')#
     parser.add_argument('--ADDFdataset', default=False, action='store_true', help='Whether to use Anomaly Detection Defocused Dataset')
     parser.add_argument('--category', default='hazelnut') # iso/08F
+    parser.add_argument('--anomaly_class', type=int, default=1, help='Class index which use as anomaly dataset, only use with ADDF dataset')
+    parser.add_argument('--img_type', type=str, default='all', help='one of "all", "edge", "xedge", "wafer", only use with ADDF dataset')
     parser.add_argument('--num_epochs', default=1)
     parser.add_argument('--batch_size', default=32)
-    parser.add_argument('--load_size', default=256) # 256
+    parser.add_argument('--load_size', type=int, default=256) # 256
     parser.add_argument('--input_size', default=224)
-    parser.add_argument('--coreset_sampling_ratio', default=0.001)
+    parser.add_argument('--coreset_sampling_ratio', type=float, default=1)
     parser.add_argument('--project_root_path', default=r'../anomaly_result') # 'D:\Project_Train_Results\mvtec_anomaly_detection\210624\test') #
     parser.add_argument('--save_src_code', default=True)
     parser.add_argument('--save_anomaly_map', default=True)
     parser.add_argument('--n_neighbors', type=int, default=9)
+    parser.add_argument('--block_index', type=int, default=2) # 2 means block index [2, 3]
+    parser.add_argument('--use_kspace', default=False, action='store_true', help='Whether to use kspace of input image')
+    parser.add_argument('--visualize', default=False, action='store_true', help='Whether to visualize t-SNE projection')
     args = parser.parse_args()
     return args
 
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args = get_args()
-    trainer = pl.Trainer.from_argparse_args(args, default_root_dir=os.path.join(args.project_root_path, args.category), max_epochs=args.num_epochs, gpus=1) #, check_val_every_n_epoch=args.val_freq,  num_sanity_val_steps=0) # ,fast_dev_run=True)
+    if args.ADDFdataset :
+        default_root_dir = os.path.join(args.project_root_path, args.category, str(args.anomaly_class), args.img_type)
+    else :
+        default_root_dir = os.path.join(args.project_root_path, args.category)
+    trainer = pl.Trainer.from_argparse_args(args, default_root_dir=default_root_dir, max_epochs=args.num_epochs, gpus=1) #, check_val_every_n_epoch=args.val_freq,  num_sanity_val_steps=0) # ,fast_dev_run=True)
     model = STPM(hparams=args)
     if args.phase == 'train':
         trainer.fit(model)
