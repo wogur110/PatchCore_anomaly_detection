@@ -396,10 +396,10 @@ class STPM(pl.LightningModule):
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet152-b121ed2d.pth"
         # self.model = models.resnet101()
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet101-5d3b4d8f.pth"
-        self.model = models.resnet18()
-        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet18-f37072fd.pth"
-        # self.model = models.resnet34()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
+        # self.model = models.resnet18()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet18-f37072fd.pth"
+        self.model = models.resnet34()
+        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
         # self.model = models.resnet50()
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet50-19c8e357.pth"
         # self.model = models.wide_resnet50_2()
@@ -448,6 +448,9 @@ class STPM(pl.LightningModule):
 
         self.inv_normalize = transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225])
 
+        self.viz_feature_list = []
+        self.viz_class_idx_list = []
+
     def init_results_list(self):
         self.gt_list_px_lvl = []
         self.pred_list_px_lvl = []
@@ -455,8 +458,6 @@ class STPM(pl.LightningModule):
         self.pred_list_img_lvl = []
         self.img_path_list = []
         self.img_type_list = []
-        self.viz_feature_list = []
-        self.viz_class_idx_list = []
 
     def init_features(self):
         self.features = []
@@ -539,14 +540,15 @@ class STPM(pl.LightningModule):
                 embeddings_kspace.append(m(feature))
             embedding_img = np.array(embedding_concat(embeddings_img[0], embeddings_img[1]))
             embedding_kspace = np.array(embedding_concat(embeddings_kspace[0], embeddings_kspace[1]))
-
+            
         if args.input_method == "kspace" :
-            self.embedding_list.extend(reshape_embedding(embedding_kspace))
+            embedding_ = embedding_kspace
         elif args.input_method == "both" :
-            self.embedding_list.extend(reshape_embedding(np.concatenate((embedding_img, embedding_kspace), axis=1)))
+            embedding_ = np.concatenate((embedding_img, embedding_kspace), axis=1)
         elif args.input_method == "image" :
-            self.embedding_list.extend(reshape_embedding(embedding_img))
+            embedding_ = embedding_img
 
+        self.embedding_list.extend(reshape_embedding(embedding_))
 
         # if args.input_method == "kspace" :
         #     features = self(kspace_x)
@@ -580,6 +582,9 @@ class STPM(pl.LightningModule):
             self.embedding_mean, self.embedding_std = np.mean(self.embedding_coreset, axis=0), np.std(self.embedding_coreset, axis=0)
             self.embedding_coreset = (self.embedding_coreset - self.embedding_mean.reshape(1, -1)) / (args.whitening_offset + self.embedding_std.reshape(1, -1))
 
+        if args.ADDFdataset and args.visualize:
+            self.viz_feature_list += [self.embedding_coreset[idx] for idx in range(self.embedding_coreset.shape[0])]
+            self.viz_class_idx_list += [0]*self.embedding_coreset.shape[0]
 
         print('initial embedding size : ', total_embeddings.shape)
         print('final embedding size : ', self.embedding_coreset.shape)
@@ -616,7 +621,7 @@ class STPM(pl.LightningModule):
         elif args.input_method == "image" :
             embedding_ = embedding_img
 
-        embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+        embedding_test = np.array(reshape_embedding(embedding_))
 
         if args.whitening :
             embedding_test = (embedding_test - self.embedding_mean.reshape(1, -1)) / (args.whitening_offset + self.embedding_std.reshape(1, -1))
@@ -640,17 +645,17 @@ class STPM(pl.LightningModule):
         #     embedding_test = np.array(reshape_embedding(np.array(embedding_)))
 
         if args.ADDFdataset and args.visualize:
-            self.viz_feature_list += (reshape_embedding(np.array(embedding_)))
+            self.viz_feature_list += [embedding_test[idx] for idx in range(embedding_test.shape[0])]
             if label.cpu().numpy()[0] == 0 :
-                viz_class_idx = 0
+                viz_class_idx = 1
             else :
                 if 'wafer' in x_type[0] :
-                    viz_class_idx = 1
-                elif 'edge' in x_type[0] and not 'xedge' in x_type[0]:
                     viz_class_idx = 2
-                elif 'xedge' in x_type[0] :
+                elif 'edge' in x_type[0] and not 'xedge' in x_type[0]:
                     viz_class_idx = 3
-            self.viz_class_idx_list += ([viz_class_idx]*embedding_test.shape[0])
+                elif 'xedge' in x_type[0] :
+                    viz_class_idx = 4
+            self.viz_class_idx_list += [viz_class_idx]*embedding_test.shape[0]
 
         #revised : 2021/01/17(Jaehyeok Bae)
         score_patches, feature_indices = self.index.search(embedding_test, k=1)
@@ -772,11 +777,10 @@ def get_args():
     parser.add_argument('--n_neighbors', type=int, default=9)
     parser.add_argument('--block_index', type=int, default=2) # 2 means block index [2, 3]
     parser.add_argument('--input_method', choices=['image','kspace','both'], default='image')
-    #parser.add_argument('--use_kspace', default=False, action='store_true', help='Whether to use kspace of input image')
     parser.add_argument('--visualize', default=False, action='store_true', help='Whether to visualize t-SNE projection')
     parser.add_argument('--crop_augmentation', default=False, action='store_true', help='Whether to use crop augmentation')
     parser.add_argument('--whitening', default=False, action='store_true', help='Whether to use whitening features')
-    parser.add_argument('--whitening_offset', type=float, default=0.01)
+    parser.add_argument('--whitening_offset', type=float, default=0.001)
     args = parser.parse_args()
     return args
 
