@@ -32,6 +32,7 @@ from torchvision import models
 
 from utils.common.utils import ifftc_torch, fftc_torch
 from utils.common.visualize import visualize_TSNE
+from math import floor
 
 def distance_matrix(x, y=None, p=2):  # pairwise distance of vectors
 
@@ -151,7 +152,7 @@ mean_train = [0.485, 0.456, 0.406]
 std_train = [0.229, 0.224, 0.225]
 
 class ADDFDataset(Dataset):
-    def __init__(self, root, transform, gt_transform, phase):
+    def __init__(self, root, transform, gt_transform, phase, crop_augmentation=False):
         if phase=='train':
             self.img_dirs = []
             if args.img_type == 'all' or args.img_type == 'edge' :
@@ -193,6 +194,7 @@ class ADDFDataset(Dataset):
 
         self.phase = phase
         self.transform = transform
+        self.crop_augmentation = crop_augmentation
         # load dataset
         self.img_paths, self.labels, self.types = self.load_dataset() # self.labels => good : 0, anomaly : 1
 
@@ -230,12 +232,30 @@ class ADDFDataset(Dataset):
         return img_tot_paths, tot_labels, tot_types
 
     def __len__(self):
+        if self.crop_augmentation :
+            return len(self.img_paths) * 5
         return len(self.img_paths)
 
     def __getitem__(self, idx):
-        img_path, label, img_type = self.img_paths[idx], self.labels[idx], self.types[idx]
+        if self.crop_augmentation :
+            img_idx, offset_idx = floor(idx / 5), int(idx % 5)
+        else :
+            img_idx = idx
+
+        img_path, label, img_type = self.img_paths[img_idx], self.labels[img_idx], self.types[img_idx]
         img = Image.open(img_path).convert('RGB')
-        img = self.transform(img)
+        if self.crop_augmentation :
+            #cv2.imwrite("./original.png", np.array(img))
+            img_tensor = self.transform(img)
+            img = img_tensor[offset_idx]
+            # inv_normalize = transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225])
+            # cv2.imwrite("./tensor1.png", (inv_normalize(img_tensor[0])*255).numpy().transpose(1,2,0))
+            # cv2.imwrite("./tensor2.png", (inv_normalize(img_tensor[1])*255).numpy().transpose(1,2,0))
+            # cv2.imwrite("./tensor3.png", (inv_normalize(img_tensor[2])*255).numpy().transpose(1,2,0))
+            # cv2.imwrite("./tensor4.png", (inv_normalize(img_tensor[3])*255).numpy().transpose(1,2,0))
+            # cv2.imwrite("./tensor5.png", (inv_normalize(img_tensor[4])*255).numpy().transpose(1,2,0))
+        else :
+            img = self.transform(img)
 
         # kspace_feature
         kspace_img = torch.abs(fftc_torch(img))
@@ -376,12 +396,14 @@ class STPM(pl.LightningModule):
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet152-b121ed2d.pth"
         # self.model = models.resnet101()
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet101-5d3b4d8f.pth"
+        self.model = models.resnet18()
+        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet18-f37072fd.pth"
         # self.model = models.resnet34()
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
         # self.model = models.resnet50()
         # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet50-19c8e357.pth"
-        self.model = models.wide_resnet50_2()
-        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
+        # self.model = models.wide_resnet50_2()
+        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
         self.model.load_state_dict(torch.load(model_path, map_location=self._device))
 
         for param in self.model.parameters():
@@ -404,6 +426,14 @@ class STPM(pl.LightningModule):
         self.criterion = torch.nn.MSELoss(reduction='sum')
 
         self.init_results_list()
+
+        self.data_crop_aug_transforms = transforms.Compose([
+                        transforms.Resize((args.load_size, args.load_size), Image.ANTIALIAS),
+                        transforms.CenterCrop((int)((args.load_size + args.input_size) / 2)),
+                        transforms.FiveCrop(args.input_size),
+                        transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
+                        transforms.Normalize(mean=mean_train,
+                                            std=std_train)])
 
         self.data_transforms = transforms.Compose([
                         transforms.Resize((args.load_size, args.load_size), Image.ANTIALIAS),
@@ -455,7 +485,10 @@ class STPM(pl.LightningModule):
 
     def train_dataloader(self):
         if args.ADDFdataset :
-            image_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
+            if args.crop_augmentation :
+                image_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_crop_aug_transforms, gt_transform=self.gt_transforms, phase='train', crop_augmentation=True)
+            else :
+                image_datasets = ADDFDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
         else :
             image_datasets = MVTecDataset(root=os.path.join(args.dataset_path,args.category), transform=self.data_transforms, gt_transform=self.gt_transforms, phase='train')
         train_loader = DataLoader(image_datasets, batch_size=args.batch_size, shuffle=True, num_workers=0) #, pin_memory=True)
@@ -489,20 +522,48 @@ class STPM(pl.LightningModule):
 
     def training_step(self, batch, batch_idx): # save locally aware patch features
         x, kspace_x, _, _, file_name, _ = batch
-        if args.use_kspace :
-            features = self(kspace_x)
-        else :
-            features = self(x)
+        
+        features_img = self(x)
+        features_kspace = self(kspace_x)
 
         if args.block_index == -1 or args.block_index == -2 :
-            self.embedding_list.extend(reshape_embedding(np.array(features[0].cpu())))
-        else :
-            embeddings = []
-            for feature in features:
-                m = torch.nn.AvgPool2d(3, 1, 1)
-                embeddings.append(m(feature))
-            embedding = embedding_concat(embeddings[0], embeddings[1])
-            self.embedding_list.extend(reshape_embedding(np.array(embedding)))
+            embedding_img = np.array(features_img[0].cpu())
+            embedding_kspace = np.array(features_kspace[0].cpu())
+        else : 
+            embeddings_img = []
+            embeddings_kspace = []
+            m = torch.nn.AvgPool2d(3, 1, 1)
+            for feature in features_img:                
+                embeddings_img.append(m(feature))
+            for feature in features_kspace:                
+                embeddings_kspace.append(m(feature))
+            embedding_img = np.array(embedding_concat(embeddings_img[0], embeddings_img[1]))
+            embedding_kspace = np.array(embedding_concat(embeddings_kspace[0], embeddings_kspace[1]))
+
+        if args.input_method == "kspace" :
+            self.embedding_list.extend(reshape_embedding(embedding_kspace))
+        elif args.input_method == "both" :
+            self.embedding_list.extend(reshape_embedding(np.concatenate((embedding_img, embedding_kspace), axis=1)))
+        elif args.input_method == "image" :
+            self.embedding_list.extend(reshape_embedding(embedding_img))
+
+
+        # if args.input_method == "kspace" :
+        #     features = self(kspace_x)
+        # elif args.input_method == "both" :
+        #     features = torch.cat((self(x), self(kspace_x)), dim=0)
+        # else :
+        #     features = self(x)
+
+        # if args.block_index == -1 or args.block_index == -2 :
+        #     self.embedding_list.extend(reshape_embedding(np.array(features[0].cpu())))
+        # else :
+        #     embeddings = []
+        #     for feature in features:
+        #         m = torch.nn.AvgPool2d(3, 1, 1)
+        #         embeddings.append(m(feature))
+        #     embedding = embedding_concat(embeddings[0], embeddings[1])
+        #     self.embedding_list.extend(reshape_embedding(np.array(embedding)))
 
     def training_epoch_end(self, outputs):
         total_embeddings = np.array(self.embedding_list)
@@ -514,6 +575,12 @@ class STPM(pl.LightningModule):
         selected_idx = selector.select_batch(model=self.randomprojector, already_selected=[], N=int(total_embeddings.shape[0]*args.coreset_sampling_ratio))
         self.embedding_coreset = total_embeddings[selected_idx]
 
+        # whitening
+        if args.whitening :
+            self.embedding_mean, self.embedding_std = np.mean(self.embedding_coreset, axis=0), np.std(self.embedding_coreset, axis=0)
+            self.embedding_coreset = (self.embedding_coreset - self.embedding_mean.reshape(1, -1)) / (args.whitening_offset + self.embedding_std.reshape(1, -1))
+
+
         print('initial embedding size : ', total_embeddings.shape)
         print('final embedding size : ', self.embedding_coreset.shape)
         #faiss
@@ -524,22 +591,53 @@ class STPM(pl.LightningModule):
 
     def test_step(self, batch, batch_idx): # Nearest Neighbour Search
         x, kspace_x, gt, label, file_name, x_type = batch
-        # extract embedding
-        if args.use_kspace :
-            features = self(kspace_x)
-        else :
-            features = self(x)
+
+        features_img = self(x)
+        features_kspace = self(kspace_x)
 
         if args.block_index == -1 or args.block_index == -2 :
-            embedding_ = features[0].cpu()
-            embedding_test = np.array(reshape_embedding(np.array(embedding_)))
-        else :
-            embeddings = []
-            for feature in features:
-                m = torch.nn.AvgPool2d(3, 1, 1)
-                embeddings.append(m(feature))
-            embedding_ = embedding_concat(embeddings[0], embeddings[1])
-            embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+            embedding_img = np.array(features_img[0].cpu())
+            embedding_kspace = np.array(features_kspace[0].cpu())
+        else : 
+            embeddings_img = []
+            embeddings_kspace = []
+            m = torch.nn.AvgPool2d(3, 1, 1)
+            for feature in features_img:                
+                embeddings_img.append(m(feature))
+            for feature in features_kspace:                
+                embeddings_kspace.append(m(feature))
+            embedding_img = np.array(embedding_concat(embeddings_img[0], embeddings_img[1]))
+            embedding_kspace = np.array(embedding_concat(embeddings_kspace[0], embeddings_kspace[1]))
+
+        if args.input_method == "kspace" :
+            embedding_ = embedding_kspace
+        elif args.input_method == "both" :
+            embedding_ = np.concatenate((embedding_img, embedding_kspace), axis=1)
+        elif args.input_method == "image" :
+            embedding_ = embedding_img
+
+        embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+
+        if args.whitening :
+            embedding_test = (embedding_test - self.embedding_mean.reshape(1, -1)) / (args.whitening_offset + self.embedding_std.reshape(1, -1))
+
+        # if args.input_method == "kspace" :
+        #     features = self(kspace_x)
+        # elif args.input_method == "both" :
+        #     features = torch.cat((self(x), self(kspace_x)), dim=0)
+        # else :
+        #     features = self(x)
+
+        # if args.block_index == -1 or args.block_index == -2 :
+        #     embedding_ = features[0].cpu()
+        #     embedding_test = np.array(reshape_embedding(np.array(embedding_)))
+        # else :
+        #     embeddings = []
+        #     for feature in features:
+        #         m = torch.nn.AvgPool2d(3, 1, 1)
+        #         embeddings.append(m(feature))
+        #     embedding_ = embedding_concat(embeddings[0], embeddings[1])
+        #     embedding_test = np.array(reshape_embedding(np.array(embedding_)))
 
         if args.ADDFdataset and args.visualize:
             self.viz_feature_list += (reshape_embedding(np.array(embedding_)))
@@ -631,7 +729,8 @@ class STPM(pl.LightningModule):
 
         if args.ADDFdataset :
             f = open("../all_train_result.txt", 'a')
-            data = [args.category, str(args.anomaly_class), args.img_type, str(args.coreset_sampling_ratio), str(args.use_kspace), str(args.block_index), str(self.embedding_coreset.shape[0]), "{0:.4f}".format(img_auc)]
+            data = [args.category, str(args.anomaly_class), args.img_type, str(args.coreset_sampling_ratio), str(args.input_method), str(args.block_index), str(self.embedding_coreset.shape[0]), \
+                str(args.crop_augmentation), str(args.whitening), str(args.whitening_offset), "{0:.4f}".format(img_auc)]
             data = ','.join(data) + '\n'
             f.write(data)
             f.close()
@@ -672,8 +771,12 @@ def get_args():
     parser.add_argument('--save_anomaly_map', default=True)
     parser.add_argument('--n_neighbors', type=int, default=9)
     parser.add_argument('--block_index', type=int, default=2) # 2 means block index [2, 3]
-    parser.add_argument('--use_kspace', default=False, action='store_true', help='Whether to use kspace of input image')
+    parser.add_argument('--input_method', choices=['image','kspace','both'], default='image')
+    #parser.add_argument('--use_kspace', default=False, action='store_true', help='Whether to use kspace of input image')
     parser.add_argument('--visualize', default=False, action='store_true', help='Whether to visualize t-SNE projection')
+    parser.add_argument('--crop_augmentation', default=False, action='store_true', help='Whether to use crop augmentation')
+    parser.add_argument('--whitening', default=False, action='store_true', help='Whether to use whitening features')
+    parser.add_argument('--whitening_offset', type=float, default=0.01)
     args = parser.parse_args()
     return args
 

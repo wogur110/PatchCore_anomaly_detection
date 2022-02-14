@@ -132,3 +132,4 @@ dmypy.json
 ./embeddings
 *.sh
 *.faiss
+*.png
