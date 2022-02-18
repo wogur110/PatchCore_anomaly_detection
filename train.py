@@ -245,28 +245,14 @@ class ADDFDataset(Dataset):
         img_path, label, img_type = self.img_paths[img_idx], self.labels[img_idx], self.types[img_idx]
         img = Image.open(img_path).convert('RGB')
         if self.crop_augmentation :
-            #cv2.imwrite("./original.png", np.array(img))
             img_tensor = self.transform(img)
             img = img_tensor[offset_idx]
-            # inv_normalize = transforms.Normalize(mean=[-0.485/0.229, -0.456/0.224, -0.406/0.225], std=[1/0.229, 1/0.224, 1/0.225])
-            # cv2.imwrite("./tensor1.png", (inv_normalize(img_tensor[0])*255).numpy().transpose(1,2,0))
-            # cv2.imwrite("./tensor2.png", (inv_normalize(img_tensor[1])*255).numpy().transpose(1,2,0))
-            # cv2.imwrite("./tensor3.png", (inv_normalize(img_tensor[2])*255).numpy().transpose(1,2,0))
-            # cv2.imwrite("./tensor4.png", (inv_normalize(img_tensor[3])*255).numpy().transpose(1,2,0))
-            # cv2.imwrite("./tensor5.png", (inv_normalize(img_tensor[4])*255).numpy().transpose(1,2,0))
         else :
             img = self.transform(img)
 
         # kspace_feature
         kspace_img = torch.abs(fftc_torch(img))
-        center_pos = int(kspace_img.shape[1]/2), int(kspace_img.shape[2]/2)
-
-        #max_offset = 180.0
-
         kspace_img = kspace_img / kspace_img.max()
-        #kspace_img = kspace_img / max_offset
-        #kspace_img[:, center_pos[0], center_pos[1]] = 0 # erase DC value
-        #kspace_img[:, center_pos[0]-1:center_pos[0]+1, center_pos[0]-1:center_pos[0]+1] = 0 # erase DC value
         normalize = transforms.Normalize(mean=mean_train, std=std_train)
         kspace_img = normalize(kspace_img)
 
@@ -392,18 +378,25 @@ class STPM(pl.LightningModule):
 
         #self.model = torch.hub.load('pytorch/vision:v0.9.0', 'wide_resnet50_2', pretrained=True)
 
-        # self.model = models.resnet152()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet152-b121ed2d.pth"
-        # self.model = models.resnet101()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet101-5d3b4d8f.pth"
-        # self.model = models.resnet18()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet18-f37072fd.pth"
-        self.model = models.resnet34()
-        model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
-        # self.model = models.resnet50()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet50-19c8e357.pth"
-        # self.model = models.wide_resnet50_2()
-        # model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
+        if args.model == 'R152' :
+            self.model = models.resnet152()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet152-b121ed2d.pth"
+        elif args.model == 'R101' :
+            self.model = models.resnet101()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet101-5d3b4d8f.pth"
+        elif args.model == 'R18' :
+            self.model = models.resnet18()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet18-f37072fd.pth"
+        elif args.model == 'R34' :
+            self.model = models.resnet34()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet34-333f7ec4.pth"
+        elif args.model == 'R50' :
+            self.model = models.resnet50()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/resnet50-19c8e357.pth"
+        elif args.model == 'WR50' :
+            self.model = models.wide_resnet50_2()
+            model_path = "/project/workSpace/aims-pvc/model/imagenet_pretrained/wide_resnet50_2-95faca4d.pth"
+
         self.model.load_state_dict(torch.load(model_path, map_location=self._device))
 
         for param in self.model.parameters():
@@ -434,7 +427,6 @@ class STPM(pl.LightningModule):
                         transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
                         transforms.Normalize(mean=mean_train,
                                             std=std_train)])
-
         self.data_transforms = transforms.Compose([
                         transforms.Resize((args.load_size, args.load_size), Image.ANTIALIAS),
                         transforms.ToTensor(),
@@ -550,23 +542,6 @@ class STPM(pl.LightningModule):
 
         self.embedding_list.extend(reshape_embedding(embedding_))
 
-        # if args.input_method == "kspace" :
-        #     features = self(kspace_x)
-        # elif args.input_method == "both" :
-        #     features = torch.cat((self(x), self(kspace_x)), dim=0)
-        # else :
-        #     features = self(x)
-
-        # if args.block_index == -1 or args.block_index == -2 :
-        #     self.embedding_list.extend(reshape_embedding(np.array(features[0].cpu())))
-        # else :
-        #     embeddings = []
-        #     for feature in features:
-        #         m = torch.nn.AvgPool2d(3, 1, 1)
-        #         embeddings.append(m(feature))
-        #     embedding = embedding_concat(embeddings[0], embeddings[1])
-        #     self.embedding_list.extend(reshape_embedding(np.array(embedding)))
-
     def training_epoch_end(self, outputs):
         total_embeddings = np.array(self.embedding_list)
         # Random projection
@@ -592,7 +567,6 @@ class STPM(pl.LightningModule):
         self.index = faiss.IndexFlatL2(self.embedding_coreset.shape[1])
         self.index.add(self.embedding_coreset)
         faiss.write_index(self.index,  os.path.join(self.embedding_dir_path,'index.faiss'))
-
 
     def test_step(self, batch, batch_idx): # Nearest Neighbour Search
         x, kspace_x, gt, label, file_name, x_type = batch
@@ -626,24 +600,6 @@ class STPM(pl.LightningModule):
         if args.whitening :
             embedding_test = (embedding_test - self.embedding_mean.reshape(1, -1)) / (args.whitening_offset + self.embedding_std.reshape(1, -1))
 
-        # if args.input_method == "kspace" :
-        #     features = self(kspace_x)
-        # elif args.input_method == "both" :
-        #     features = torch.cat((self(x), self(kspace_x)), dim=0)
-        # else :
-        #     features = self(x)
-
-        # if args.block_index == -1 or args.block_index == -2 :
-        #     embedding_ = features[0].cpu()
-        #     embedding_test = np.array(reshape_embedding(np.array(embedding_)))
-        # else :
-        #     embeddings = []
-        #     for feature in features:
-        #         m = torch.nn.AvgPool2d(3, 1, 1)
-        #         embeddings.append(m(feature))
-        #     embedding_ = embedding_concat(embeddings[0], embeddings[1])
-        #     embedding_test = np.array(reshape_embedding(np.array(embedding_)))
-
         if args.ADDFdataset and args.visualize:
             self.viz_feature_list += [embedding_test[idx] for idx in range(embedding_test.shape[0])]
             if label.cpu().numpy()[0] == 0 :
@@ -657,8 +613,8 @@ class STPM(pl.LightningModule):
                     viz_class_idx = 4
             self.viz_class_idx_list += [viz_class_idx]*embedding_test.shape[0]
 
-        #revised : 2021/01/17(Jaehyeok Bae)
         score_patches, feature_indices = self.index.search(embedding_test, k=1)
+        score_patches = np.sqrt(score_patches)
 
         if args.block_index == 1:
             anomaly_map = score_patches[:,0].reshape((56,56))
@@ -671,11 +627,11 @@ class STPM(pl.LightningModule):
         elif args.block_index == -2 :
             anomaly_map = score_patches[:,0].reshape((7,7))
 
-        anomaly_index = np.argmax(score_patches[:,0])
-        max_dist_score = score_patches[anomaly_index] # maximum distance score
-        mean_dist_score = np.mean(score_patches)
-        anomaly_patch = embedding_test[anomaly_index]
-        nearest_patch_feature = self.index.reconstruct(feature_indices[anomaly_index].item()) # nearest patch-feature to anomaly index test feature
+        anomaly_max_idx = np.argmax(score_patches[:, 0])
+        max_dist_score = score_patches[anomaly_max_idx, 0] # maximum distance score
+        mean_dist_score = np.mean(score_patches[:, 0])
+        anomaly_max_feature = embedding_test[anomaly_max_idx]
+        nearest_patch_feature = self.index.reconstruct(feature_indices[anomaly_max_idx].item()) # nearest patch-feature from anomaly_max_feature
         _, b_nearest_patch_feature_indices = self.index.search(nearest_patch_feature.reshape(1, -1) , k=args.n_neighbors)
 
         neighbor_index = faiss.IndexFlatL2(self.embedding_coreset.shape[1])
@@ -683,33 +639,25 @@ class STPM(pl.LightningModule):
         for i in range(b_nearest_patch_feature_indices.shape[1]) :
             neighbor_index.add(self.index.reconstruct(b_nearest_patch_feature_indices[0, i].item()).reshape(1, -1))
 
-        neighbor_distances, _ = neighbor_index.search(anomaly_patch.reshape(1, -1), k=args.n_neighbors)
+        neighbor_distances, _ = neighbor_index.search(anomaly_max_feature.reshape(1, -1), k=args.n_neighbors)
+        neighbor_distances = np.sqrt(neighbor_distances)
 
-        w = (1 - 1 / np.sum(np.exp(neighbor_distances - max_dist_score)))
-        #score = w * max_dist_score # Image-level score
-        score = mean_dist_score
-        #score = w * mean_dist_score
+        w = 1 - 1 / np.sum(np.exp(neighbor_distances - max_dist_score))
+
+        score = w * max_dist_score # Image-level score
+        #score = mean_dist_score # simplified Image-level score
 
         gt_np = gt.cpu().numpy()[0,0].astype(int)
         anomaly_map_resized = cv2.resize(anomaly_map, (args.input_size, args.input_size))
         anomaly_map_resized_blur = gaussian_filter(anomaly_map_resized, sigma=4)
 
-        '''
-        score_patches, _ = self.index.search(embedding_test , k=args.n_neighbors)
-        anomaly_map = score_patches[:,0].reshape((28,28))
-        N_b = score_patches[np.argmax(score_patches[:,0])]
-        w = (1 - (np.max(np.exp(N_b))/np.sum(np.exp(N_b))))
-        score = w*max(score_patches[:,0]) # Image-level score
-        gt_np = gt.cpu().numpy()[0,0].astype(int)
-        anomaly_map_resized = cv2.resize(anomaly_map, (args.input_size, args.input_size))
-        anomaly_map_resized_blur = gaussian_filter(anomaly_map_resized, sigma=4)
-        '''
         self.gt_list_px_lvl.extend(gt_np.ravel())
         self.pred_list_px_lvl.extend(anomaly_map_resized_blur.ravel())
         self.gt_list_img_lvl.append(label.cpu().numpy()[0])
         self.pred_list_img_lvl.append(score)
         self.img_path_list.extend(file_name)
         self.img_type_list.append(x_type[0])
+
         # save images
         x = self.inv_normalize(x).clip(0, 1)
         input_x = cv2.cvtColor(x.permute(0,2,3,1).cpu().numpy()[0]*255, cv2.COLOR_BGR2RGB)
@@ -771,16 +719,19 @@ def get_args():
     parser.add_argument('--load_size', type=int, default=256) # 256
     parser.add_argument('--input_size', default=224)
     parser.add_argument('--coreset_sampling_ratio', type=float, default=1)
-    parser.add_argument('--project_root_path', default=r'../anomaly_result') # 'D:\Project_Train_Results\mvtec_anomaly_detection\210624\test') #
+    parser.add_argument('--project_root_path', default=r'../anomaly_result') # 'D:\Project_Train_Results\mvtec_anomaly_detection\210624\test')
     parser.add_argument('--save_src_code', default=True)
     parser.add_argument('--save_anomaly_map', default=True)
     parser.add_argument('--n_neighbors', type=int, default=9)
+    parser.add_argument('--model', choices=['WR50', 'R50', 'R34', 'R18', 'R101', 'R152'], default='WR50')
     parser.add_argument('--block_index', type=int, default=2) # 2 means block index [2, 3]
     parser.add_argument('--input_method', choices=['image','kspace','both'], default='image')
     parser.add_argument('--visualize', default=False, action='store_true', help='Whether to visualize t-SNE projection')
     parser.add_argument('--crop_augmentation', default=False, action='store_true', help='Whether to use crop augmentation')
     parser.add_argument('--whitening', default=False, action='store_true', help='Whether to use whitening features')
     parser.add_argument('--whitening_offset', type=float, default=0.001)
+
+    parser.add_argument('--dwt_localize', default=False,  action='store_true', help='Whether to use dwt for anomaly localization')
     args = parser.parse_args()
     return args
 
